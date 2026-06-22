@@ -2,41 +2,49 @@ import streamlit as st
 import pandas as pd
 import numpy as np
 import io
+import os
 
 # Set up the web page
-st.set_page_config(page_title="Dashpivot to Buildlogic Converter", page_icon="🏗️", layout="centered")
+st.set_page_config(page_title="Dashpivot to Buildlogic", page_icon="🏗️", layout="centered")
 
 st.title("🏗️ Dashpivot to Buildlogic")
-
-# --- SIDEBAR: REFERENCE DATA ---
-st.sidebar.header("⚙️ Step 1: Master Data")
-st.sidebar.markdown("Upload your Excel file containing the **'Ref'** sheet (e.g., your Conversion Sheet). The app uses this to look up employee codes and rates.")
-ref_file = st.sidebar.file_uploader("Upload Reference Data (Excel)", type=["xlsx", "xls"])
-
-# --- MAIN: DASHPIVOT UPLOAD ---
-st.markdown("### Step 2: Daily Conversion")
 st.markdown("Drop your **raw Dashpivot CSV** export below to instantly format it for Buildlogic.")
-dp_file = st.file_uploader("Upload Raw Dashpivot Export (CSV)", type=["csv"])
+
+# --- AUTOMATIC REFERENCE DATA LOADING ---
+ref_file_path = 'reference_data.xlsx'
+
+# Check if the file exists in the GitHub repo
+if not os.path.exists(ref_file_path):
+    st.error("⚠️ Master Data missing! Please upload 'reference_data.xlsx' to your GitHub repository.")
+    st.stop() # Stops the app from running further until the file is found
+
+# Load dictionaries silently in the background
+try:
+    ref = pd.read_excel(ref_file_path, sheet_name='Ref')
+    employee_ref = ref.dropna(subset=['Accounting System Code'])
+    emp_code_dict = dict(zip(employee_ref['Accounting System Code'], employee_ref['Unnamed: 1']))
+    emp_rate_dict = dict(zip(employee_ref['Accounting System Code'], employee_ref['Unnamed: 2']))
+    emp_tax_dict = dict(zip(employee_ref['Accounting System Code'], employee_ref['Unnamed: 4']))
+
+    activity_ref = ref.dropna(subset=['Reference Code Column'])
+    act_trade_dict = dict(zip(activity_ref['Reference Code Column'].astype(str).str.zfill(5), activity_ref['Unnamed: 7']))
+    act_cost_dict = dict(zip(activity_ref['Reference Code Column'].astype(str).str.zfill(5), activity_ref['Unnamed: 8']))
+except Exception as e:
+    st.error(f"⚠️ Error reading the Reference Data: {e}")
+    st.stop()
+
+
+# --- UI: THE SINGLE DROP ZONE ---
+dp_file = st.file_uploader("Upload Daily CSV", type=["csv"], label_visibility="hidden")
 
 # --- PROCESSING LOGIC ---
-if dp_file and ref_file:
+if dp_file:
     with st.spinner('Converting data...'):
         try:
-            # 1. Load the data
+            # 1. Load the daily data
             dp = pd.read_csv(dp_file)
-            ref = pd.read_excel(ref_file, sheet_name='Ref')
 
-            # 2. Build Lookup Dictionaries
-            employee_ref = ref.dropna(subset=['Accounting System Code'])
-            emp_code_dict = dict(zip(employee_ref['Accounting System Code'], employee_ref['Unnamed: 1']))
-            emp_rate_dict = dict(zip(employee_ref['Accounting System Code'], employee_ref['Unnamed: 2']))
-            emp_tax_dict = dict(zip(employee_ref['Accounting System Code'], employee_ref['Unnamed: 4']))
-
-            activity_ref = ref.dropna(subset=['Reference Code Column'])
-            act_trade_dict = dict(zip(activity_ref['Reference Code Column'].astype(str).str.zfill(5), activity_ref['Unnamed: 7']))
-            act_cost_dict = dict(zip(activity_ref['Reference Code Column'].astype(str).str.zfill(5), activity_ref['Unnamed: 8']))
-
-            # 3. Process the Data
+            # 2. Process the Data
             bl = pd.DataFrame(index=dp.index)
 
             # Duplicate Form Logic
@@ -46,7 +54,7 @@ if dp_file and ref_file:
 
             bl['Companyname'] = dp['Created by']
             
-            # Format Date for Buildlogic
+            # Format Date
             dp['Date'] = pd.to_datetime(dp['Date'])
             bl['TimeCostDate'] = dp['Date'].dt.strftime('%Y-%m-%d')
             
@@ -86,7 +94,7 @@ if dp_file and ref_file:
                     'Hours', 'Rate', 'TaxCode', 'total', 'REVIEW_NOTES']
             bl = bl[cols]
 
-            # 4. Prepare file for download
+            # 3. Prepare file for download
             csv_buffer = io.StringIO()
             bl.to_csv(csv_buffer, index=False)
             csv_data = csv_buffer.getvalue()
@@ -94,11 +102,9 @@ if dp_file and ref_file:
             # --- UI Display ---
             st.success("✅ Conversion successful! Ready for Buildlogic.")
             
-            # Preview
             st.write("### Data Preview")
             st.dataframe(bl.head(10))
 
-            # Download
             st.download_button(
                 label="⬇️ Download Buildlogic CSV",
                 data=csv_data,
@@ -108,6 +114,3 @@ if dp_file and ref_file:
 
         except Exception as e:
             st.error(f"An error occurred while processing the file: {e}")
-            
-elif dp_file and not ref_file:
-    st.warning("⚠️ Almost ready! Please upload your 'Ref' Excel file in the sidebar to the left so the app can look up the employee codes.")
