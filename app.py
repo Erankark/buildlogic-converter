@@ -16,7 +16,7 @@ ref_file_path = 'reference_data.xlsx'
 # Check if the file exists in the GitHub repo
 if not os.path.exists(ref_file_path):
     st.error("⚠️ Master Data missing! Please upload 'reference_data.xlsx' to your GitHub repository.")
-    st.stop() # Stops the app from running further until the file is found
+    st.stop() 
 
 # Load dictionaries silently in the background
 try:
@@ -66,11 +66,15 @@ if dp_file:
             dp.loc[valid_idx, 'Hours - Ordinary Hours'] -= 0.5
             bl['Hours'] = dp['Hours - Ordinary Hours']
 
-            # Extraction
+            # --- UPDATED EXTRACTION LOGIC ---
             bl['JobNumber'] = dp['Hours - Project'].astype(str).str.extract(r'HWYN(\d{4})')
+            
+            # Safely split the activity string
             activity_split = dp['Hours - Activity'].astype(str).str.split(' - ', n=1, expand=True)
+            
+            # If no hyphen exists, column 1 is empty. We tell it to use column 0 as the description instead.
+            bl['Description'] = activity_split[1].fillna(activity_split[0])
             bl['ReferenceCode'] = pd.to_numeric(activity_split[0], errors='coerce')
-            bl['Description'] = activity_split[1]
 
             # Lookups & Overtime
             bl['REVIEW_NOTES'] = ""
@@ -83,8 +87,10 @@ if dp_file:
             is_weekend = dp['Date'].dt.dayofweek >= 5
             bl['Rate'] = np.where(is_weekend, base_rates * 1.5, base_rates)
             
-            bl.loc[is_weekend, 'REVIEW_NOTES'] += "[OVERTIME APPLIED] "
+            # Add flags for missing data
+            bl.loc[is_weekend, 'REVIEW_NOTES'] += "[OVERTIME] "
             bl.loc[bl['AccountingSystemCode'] == 'MISSING', 'REVIEW_NOTES'] += "[MISSING EMPLOYEE] "
+            bl.loc[bl['ReferenceCode'].isna(), 'REVIEW_NOTES'] += "[MISSING ACTIVITY CODE] "
 
             bl['total'] = bl['Hours'] * bl['Rate']
 
