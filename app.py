@@ -6,18 +6,25 @@ import io
 # Set up the web page
 st.set_page_config(page_title="Dashpivot to Buildlogic Converter", page_icon="🏗️", layout="centered")
 
-st.title("🏗️ Dashpivot to Buildlogic Converter")
-st.markdown("Drag and drop your raw Dashpivot export below to instantly format it for Buildlogic.")
+st.title("🏗️ Dashpivot to Buildlogic")
 
-# Create the drag-and-drop upload zone
-uploaded_file = st.file_uploader("Upload Dashpivot Export (Excel format)", type=["xlsx", "xls"])
+# --- SIDEBAR: REFERENCE DATA ---
+st.sidebar.header("⚙️ Step 1: Master Data")
+st.sidebar.markdown("Upload your Excel file containing the **'Ref'** sheet (e.g., your Conversion Sheet). The app uses this to look up employee codes and rates.")
+ref_file = st.sidebar.file_uploader("Upload Reference Data (Excel)", type=["xlsx", "xls"])
 
-if uploaded_file is not None:
-    with st.spinner('Processing data...'):
+# --- MAIN: DASHPIVOT UPLOAD ---
+st.markdown("### Step 2: Daily Conversion")
+st.markdown("Drop your **raw Dashpivot CSV** export below to instantly format it for Buildlogic.")
+dp_file = st.file_uploader("Upload Raw Dashpivot Export (CSV)", type=["csv"])
+
+# --- PROCESSING LOGIC ---
+if dp_file and ref_file:
+    with st.spinner('Converting data...'):
         try:
-            # 1. Load the data from the uploaded file
-            dp = pd.read_excel(uploaded_file, sheet_name='Paste DP')
-            ref = pd.read_excel(uploaded_file, sheet_name='Ref')
+            # 1. Load the data
+            dp = pd.read_csv(dp_file)
+            ref = pd.read_excel(ref_file, sheet_name='Ref')
 
             # 2. Build Lookup Dictionaries
             employee_ref = ref.dropna(subset=['Accounting System Code'])
@@ -38,6 +45,8 @@ if uploaded_file is not None:
             bl.loc[dp.duplicated('Form Number', keep=False), 'Form Number'] = bl['Form Number'] + '.' + counts.astype(str)
 
             bl['Companyname'] = dp['Created by']
+            
+            # Format Date for Buildlogic
             dp['Date'] = pd.to_datetime(dp['Date'])
             bl['TimeCostDate'] = dp['Date'].dt.strftime('%Y-%m-%d')
             
@@ -85,11 +94,11 @@ if uploaded_file is not None:
             # --- UI Display ---
             st.success("✅ Conversion successful! Ready for Buildlogic.")
             
-            # Show a quick preview of the data so you can check it before downloading
+            # Preview
             st.write("### Data Preview")
             st.dataframe(bl.head(10))
 
-            # Provide the download button
+            # Download
             st.download_button(
                 label="⬇️ Download Buildlogic CSV",
                 data=csv_data,
@@ -99,3 +108,6 @@ if uploaded_file is not None:
 
         except Exception as e:
             st.error(f"An error occurred while processing the file: {e}")
+            
+elif dp_file and not ref_file:
+    st.warning("⚠️ Almost ready! Please upload your 'Ref' Excel file in the sidebar to the left so the app can look up the employee codes.")
