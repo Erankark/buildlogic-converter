@@ -66,17 +66,15 @@ if dp_file:
             dp.loc[valid_idx, 'Hours - Ordinary Hours'] -= 0.5
             bl['Hours'] = dp['Hours - Ordinary Hours']
 
-            # --- UPDATED EXTRACTION LOGIC ---
-            bl['JobNumber'] = dp['Hours - Project'].astype(str).str.extract(r'HWYN(\d{4})')
+            # --- EXTRACTION LOGIC ---
+            bl['JobNumber'] = dp['Hours - Project'].astype(str).str.extract(r'HWYN(\d{4})', expand=False)
             
             # Safely split the activity string
             activity_split = dp['Hours - Activity'].astype(str).str.split(' - ', n=1, expand=True)
-            
-            # If no hyphen exists, column 1 is empty. We tell it to use column 0 as the description instead.
             bl['Description'] = activity_split[1].fillna(activity_split[0])
             bl['ReferenceCode'] = pd.to_numeric(activity_split[0], errors='coerce')
 
-            # Lookups & Overtime
+            # Lookups 
             bl['REVIEW_NOTES'] = ""
             bl['AccountingSystemCode'] = bl['Companyname'].map(emp_code_dict).fillna('MISSING')
             base_rates = pd.to_numeric(bl['Companyname'].map(emp_rate_dict), errors='coerce')
@@ -84,13 +82,32 @@ if dp_file:
             bl['Trade'] = activity_split[0].str.zfill(5).map(act_trade_dict)
             bl['CostCode'] = activity_split[0].str.zfill(5).map(act_cost_dict)
 
+            # --- RULE 1: THE FACTORY OVERRIDE ---
+            # Finds any variation of HWYN0000 or HWYN0001
+            is_factory = dp['Hours - Project'].astype(str).str.contains(r'HWYN000[01]', case=False, na=False)
+            bl.loc[is_factory, 'JobNumber'] = '0001'
+            bl.loc[is_factory, 'CostCode'] = 'LA'
+
+            # --- RULE 3: THE 4-DIGIT TEXT ENFORCER ---
+            def format_job(val):
+                val = str(val).split('.')[0] # Strip any rogue decimals
+                if val.lower() == 'nan' or val == 'None' or val == '':
+                    return ''
+                return val.zfill(4) # Guarantee 4 digits
+            
+            bl['JobNumber'] = bl['JobNumber'].apply(format_job)
+
+            # Overtime and Flagging
             is_weekend = dp['Date'].dt.dayofweek >= 5
             bl['Rate'] = np.where(is_weekend, base_rates * 1.5, base_rates)
             
-            # Add flags for missing data
             bl.loc[is_weekend, 'REVIEW_NOTES'] += "[OVERTIME] "
             bl.loc[bl['AccountingSystemCode'] == 'MISSING', 'REVIEW_NOTES'] += "[MISSING EMPLOYEE] "
             bl.loc[bl['ReferenceCode'].isna(), 'REVIEW_NOTES'] += "[MISSING ACTIVITY CODE] "
+
+            # --- RULE 2: THE ABSENT FILTER ---
+            is_absent = bl['Description'].astype(str).str.contains('absent', case=False, na=False)
+            bl.loc[is_absent, 'REVIEW_NOTES'] += "[ABSENT] "
 
             bl['total'] = bl['Hours'] * bl['Rate']
 
@@ -99,6 +116,10 @@ if dp_file:
                     'JobNumber', 'Trade', 'CostCode', 'ReferenceCode', 'Description', 
                     'Hours', 'Rate', 'TaxCode', 'total', 'REVIEW_NOTES']
             bl = bl[cols]
+
+            # Sort data so [ABSENT] rows drop to the very bottom (stable merge preserves standard dates)
+            bl['is_absent_sort'] = is_absent
+            bl = bl.sort_values(by='is_absent_sort', kind='mergesort').drop(columns=['is_absent_sort'])
 
             # 3. Prepare file for download
             csv_buffer = io.StringIO()
