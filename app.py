@@ -5,20 +5,17 @@ import io
 import os
 
 # Set up the web page
-st.set_page_config(page_title="Dashpivot to Buildlogic", page_icon="🏗️", layout="centered")
+st.set_page_config(page_title="Harwyn Timesheet Hub", page_icon="🏗️", layout="wide")
 
-st.title("🏗️ Dashpivot to Buildlogic")
-st.markdown("Drop your **raw Dashpivot CSV** export below to instantly format it for Buildlogic.")
+st.title("🏗️ Harwyn Timesheet Hub")
 
-# --- AUTOMATIC REFERENCE DATA LOADING ---
+# --- AUTOMATIC REFERENCE DATA LOADING (Global) ---
 ref_file_path = 'reference_data.xlsx'
 
-# Check if the file exists in the GitHub repo
 if not os.path.exists(ref_file_path):
     st.error("⚠️ Master Data missing! Please upload 'reference_data.xlsx' to your GitHub repository.")
     st.stop() 
 
-# Load dictionaries silently in the background
 try:
     ref = pd.read_excel(ref_file_path, sheet_name='Ref')
     employee_ref = ref.dropna(subset=['Accounting System Code'])
@@ -33,111 +30,186 @@ except Exception as e:
     st.error(f"⚠️ Error reading the Reference Data: {e}")
     st.stop()
 
+# --- CREATE TABS ---
+tab1, tab2 = st.tabs(["📤 Buildlogic Export", "📊 Labour Dashboard"])
 
-# --- UI: THE SINGLE DROP ZONE ---
-dp_file = st.file_uploader("Upload Daily CSV", type=["csv"], label_visibility="hidden")
+# ==========================================
+# TAB 1: THE STRICT BUILDLOGIC EXPORTER
+# ==========================================
+with tab1:
+    st.markdown("### Daily Buildlogic Converter")
+    st.markdown("Upload your **daily** Dashpivot CSV here to format it for Buildlogic.")
+    
+    # Dedicated Tab 1 Uploader (Note the unique key)
+    export_file = st.file_uploader("Upload Daily CSV", type=["csv"], key="export_uploader")
+    
+    if export_file:
+        with st.spinner('Preparing Buildlogic export...'):
+            try:
+                dp = pd.read_csv(export_file)
+                bl = pd.DataFrame(index=dp.index)
 
-# --- PROCESSING LOGIC ---
-if dp_file:
-    with st.spinner('Converting data...'):
+                counts = dp.groupby('Form Number').cumcount() + 1
+                bl['Form Number'] = dp['Form Number'].astype(str)
+                bl.loc[dp.duplicated('Form Number', keep=False), 'Form Number'] = bl['Form Number'] + '.' + counts.astype(str)
+
+                bl['Companyname'] = dp['Created by']
+                
+                dp['Date'] = pd.to_datetime(dp['Date'])
+                bl['TimeCostDate'] = dp['Date'].dt.strftime('%Y-%m-%d')
+                
+                dp['Hours - Ordinary Hours'] = pd.to_numeric(dp['Hours - Ordinary Hours'], errors='coerce').fillna(0)
+                max_hour_idx = dp.groupby(['Created by', 'Date'])['Hours - Ordinary Hours'].idxmax().dropna()
+                hours_at_idx = dp.loc[max_hour_idx, 'Hours - Ordinary Hours']
+                valid_idx = hours_at_idx[hours_at_idx >= 0.5].index
+                dp.loc[valid_idx, 'Hours - Ordinary Hours'] -= 0.5
+                bl['Hours'] = dp['Hours - Ordinary Hours']
+
+                bl['JobNumber'] = dp['Hours - Project'].astype(str).str.extract(r'HWYN(\d{4})', expand=False)
+                
+                activity_split = dp['Hours - Activity'].astype(str).str.split(' - ', n=1, expand=True)
+                bl['Description'] = activity_split[1].fillna(activity_split[0])
+                bl['ReferenceCode'] = pd.to_numeric(activity_split[0], errors='coerce')
+
+                bl['REVIEW_NOTES'] = ""
+                bl['AccountingSystemCode'] = bl['Companyname'].map(emp_code_dict).fillna('MISSING')
+                base_rates = pd.to_numeric(bl['Companyname'].map(emp_rate_dict), errors='coerce')
+                bl['TaxCode'] = bl['Companyname'].map(emp_tax_dict).fillna('MISSING')
+                bl['Trade'] = activity_split[0].str.zfill(5).map(act_trade_dict)
+                bl['CostCode'] = activity_split[0].str.zfill(5).map(act_cost_dict)
+
+                is_factory = dp['Hours - Project'].astype(str).str.contains(r'HWYN000[01]', case=False, na=False)
+                bl.loc[is_factory, 'JobNumber'] = '0001'
+                bl.loc[is_factory, 'CostCode'] = 'LA'
+
+                def format_job(val):
+                    val = str(val).split('.')[0] 
+                    if val.lower() == 'nan' or val == 'None' or val == '':
+                        return ''
+                    return val.zfill(4) 
+                bl['JobNumber'] = bl['JobNumber'].apply(format_job)
+
+                is_weekend = dp['Date'].dt.dayofweek >= 5
+                bl['Rate'] = np.where(is_weekend, base_rates * 1.5, base_rates)
+                
+                bl.loc[is_weekend, 'REVIEW_NOTES'] += "[OVERTIME] "
+                bl.loc[bl['AccountingSystemCode'] == 'MISSING', 'REVIEW_NOTES'] += "[MISSING EMPLOYEE] "
+                bl.loc[bl['ReferenceCode'].isna(), 'REVIEW_NOTES'] += "[MISSING ACTIVITY CODE] "
+
+                is_absent = bl['Description'].astype(str).str.contains('absent', case=False, na=False)
+                bl.loc[is_absent, 'REVIEW_NOTES'] += "[ABSENT] "
+
+                bl['total'] = bl['Hours'] * bl['Rate']
+
+                cols = ['Form Number', 'AccountingSystemCode', 'Companyname', 'TimeCostDate', 
+                        'JobNumber', 'Trade', 'CostCode', 'ReferenceCode', 'Description', 
+                        'Hours', 'Rate', 'TaxCode', 'total', 'REVIEW_NOTES']
+                bl = bl[cols]
+
+                bl['is_absent_sort'] = is_absent
+                bl = bl.sort_values(by='is_absent_sort', kind='mergesort').drop(columns=['is_absent_sort'])
+
+                csv_buffer = io.StringIO()
+                bl.to_csv(csv_buffer, index=False)
+                csv_data = csv_buffer.getvalue()
+
+                st.success("✅ Conversion successful! Ready for Buildlogic.")
+                st.download_button("⬇️ Download Buildlogic CSV", data=csv_data, file_name="Buildlogic_Import.csv", mime="text/csv")
+                st.dataframe(bl.head(10))
+
+            except Exception as e:
+                st.error(f"Export Tool Error: {e}")
+
+# ==========================================
+# TAB 2: THE LABOUR DASHBOARD
+# ==========================================
+with tab2:
+    st.markdown("### Historical Analytics Dashboard")
+    st.markdown("Upload bulk, monthly, or yearly Dashpivot CSVs here to analyze labour trends.")
+    
+    # Dedicated Tab 2 Uploader (Note the unique key)
+    dash_file = st.file_uploader("Upload Analytics CSV", type=["csv"], key="dash_uploader")
+    
+    if dash_file:
         try:
-            # 1. Load the daily data
-            dp = pd.read_csv(dp_file)
-
-            # 2. Process the Data
-            bl = pd.DataFrame(index=dp.index)
-
-            # Duplicate Form Logic
-            counts = dp.groupby('Form Number').cumcount() + 1
-            bl['Form Number'] = dp['Form Number'].astype(str)
-            bl.loc[dp.duplicated('Form Number', keep=False), 'Form Number'] = bl['Form Number'] + '.' + counts.astype(str)
-
-            bl['Companyname'] = dp['Created by']
+            dash = pd.read_csv(dash_file)
             
-            # Format Date
-            dp['Date'] = pd.to_datetime(dp['Date'])
-            bl['TimeCostDate'] = dp['Date'].dt.strftime('%Y-%m-%d')
+            # 1. Clean data for Dashboard
+            dash['Date'] = pd.to_datetime(dash['Date']).dt.date
+            dash['Hours - Ordinary Hours'] = pd.to_numeric(dash['Hours - Ordinary Hours'], errors='coerce').fillna(0)
             
-            # Lunch Break Deduction Logic
-            dp['Hours - Ordinary Hours'] = pd.to_numeric(dp['Hours - Ordinary Hours'], errors='coerce').fillna(0)
-            max_hour_idx = dp.groupby(['Created by', 'Date'])['Hours - Ordinary Hours'].idxmax().dropna()
-            hours_at_idx = dp.loc[max_hour_idx, 'Hours - Ordinary Hours']
-            valid_idx = hours_at_idx[hours_at_idx >= 0.5].index
-            dp.loc[valid_idx, 'Hours - Ordinary Hours'] -= 0.5
-            bl['Hours'] = dp['Hours - Ordinary Hours']
+            # Apply lunch deduction
+            max_hour_idx = dash.groupby(['Created by', 'Date'])['Hours - Ordinary Hours'].idxmax().dropna()
+            valid_idx = dash.loc[max_hour_idx, 'Hours - Ordinary Hours'][dash.loc[max_hour_idx, 'Hours - Ordinary Hours'] >= 0.5].index
+            dash.loc[valid_idx, 'Hours - Ordinary Hours'] -= 0.5
 
-            # --- EXTRACTION LOGIC ---
-            bl['JobNumber'] = dp['Hours - Project'].astype(str).str.extract(r'HWYN(\d{4})', expand=False)
-            
-            # Safely split the activity string
-            activity_split = dp['Hours - Activity'].astype(str).str.split(' - ', n=1, expand=True)
-            bl['Description'] = activity_split[1].fillna(activity_split[0])
-            bl['ReferenceCode'] = pd.to_numeric(activity_split[0], errors='coerce')
+            # 2. Calculate Strict 7am - 3pm Overtime
+            def calculate_standard_hours(row):
+                try:
+                    s_h, s_m = map(int, str(row['Hours - Start Time']).split(':'))
+                    e_h, e_m = map(int, str(row['Hours - End Time']).split(':'))
+                    start_m = s_h * 60 + s_m
+                    end_m = e_h * 60 + e_m
+                    
+                    std_start = 7 * 60
+                    std_end = 15 * 60
+                    
+                    overlap_start = max(start_m, std_start)
+                    overlap_end = min(end_m, std_end)
+                    std_mins = max(0, overlap_end - overlap_start)
+                    
+                    std_hrs = std_mins / 60
+                    return min(std_hrs, row['Hours - Ordinary Hours'])
+                except:
+                    return row['Hours - Ordinary Hours'] 
 
-            # Lookups 
-            bl['REVIEW_NOTES'] = ""
-            bl['AccountingSystemCode'] = bl['Companyname'].map(emp_code_dict).fillna('MISSING')
-            base_rates = pd.to_numeric(bl['Companyname'].map(emp_rate_dict), errors='coerce')
-            bl['TaxCode'] = bl['Companyname'].map(emp_tax_dict).fillna('MISSING')
-            bl['Trade'] = activity_split[0].str.zfill(5).map(act_trade_dict)
-            bl['CostCode'] = activity_split[0].str.zfill(5).map(act_cost_dict)
+            dash['Standard Hours'] = dash.apply(calculate_standard_hours, axis=1)
+            dash['Overtime Hours'] = dash['Hours - Ordinary Hours'] - dash['Standard Hours']
+            dash['Overtime Hours'] = dash['Overtime Hours'].clip(lower=0) 
 
-            # --- RULE 1: THE FACTORY OVERRIDE ---
-            # Finds any variation of HWYN0000 or HWYN0001
-            is_factory = dp['Hours - Project'].astype(str).str.contains(r'HWYN000[01]', case=False, na=False)
-            bl.loc[is_factory, 'JobNumber'] = '0001'
-            bl.loc[is_factory, 'CostCode'] = 'LA'
+            # --- GLOBAL COMMAND CENTER ---
+            st.header("Global Overview")
+            col1, col2, col3 = st.columns(3)
+            col1.metric("Total Hours Logged", f"{dash['Hours - Ordinary Hours'].sum():.1f}")
+            col2.metric("Total Standard Hours (7am-3pm)", f"{dash['Standard Hours'].sum():.1f}")
+            col3.metric("Total Overtime Hours", f"{dash['Overtime Hours'].sum():.1f}")
 
-            # --- RULE 3: THE 4-DIGIT TEXT ENFORCER ---
-            def format_job(val):
-                val = str(val).split('.')[0] # Strip any rogue decimals
-                if val.lower() == 'nan' or val == 'None' or val == '':
-                    return ''
-                return val.zfill(4) # Guarantee 4 digits
-            
-            bl['JobNumber'] = bl['JobNumber'].apply(format_job)
+            st.divider()
 
-            # Overtime and Flagging
-            is_weekend = dp['Date'].dt.dayofweek >= 5
-            bl['Rate'] = np.where(is_weekend, base_rates * 1.5, base_rates)
-            
-            bl.loc[is_weekend, 'REVIEW_NOTES'] += "[OVERTIME] "
-            bl.loc[bl['AccountingSystemCode'] == 'MISSING', 'REVIEW_NOTES'] += "[MISSING EMPLOYEE] "
-            bl.loc[bl['ReferenceCode'].isna(), 'REVIEW_NOTES'] += "[MISSING ACTIVITY CODE] "
+            # --- NAVIGATION ---
+            view_mode = st.radio("Select View Level", ["🏢 Project Deep Dive", "👷 Employee Forensics"], horizontal=True)
 
-            # --- RULE 2: THE ABSENT FILTER ---
-            is_absent = bl['Description'].astype(str).str.contains('absent', case=False, na=False)
-            bl.loc[is_absent, 'REVIEW_NOTES'] += "[ABSENT] "
+            if view_mode == "🏢 Project Deep Dive":
+                project_list = dash['Hours - Project'].dropna().unique().tolist()
+                selected_project = st.selectbox("Select Project", project_list)
+                
+                proj_data = dash[dash['Hours - Project'] == selected_project]
+                
+                col_a, col_b = st.columns(2)
+                with col_a:
+                    st.subheader("Hours by Activity")
+                    activity_hrs = proj_data.groupby('Hours - Activity')['Hours - Ordinary Hours'].sum().sort_values(ascending=False)
+                    st.bar_chart(activity_hrs)
+                    
+                with col_b:
+                    st.subheader("Staff Allocation Matrix")
+                    matrix = proj_data.pivot_table(index='Hours - Activity', columns='Created by', values='Hours - Ordinary Hours', aggfunc='sum').fillna(0)
+                    st.dataframe(matrix, use_container_width=True)
 
-            bl['total'] = bl['Hours'] * bl['Rate']
-
-            # Output Formatting
-            cols = ['Form Number', 'AccountingSystemCode', 'Companyname', 'TimeCostDate', 
-                    'JobNumber', 'Trade', 'CostCode', 'ReferenceCode', 'Description', 
-                    'Hours', 'Rate', 'TaxCode', 'total', 'REVIEW_NOTES']
-            bl = bl[cols]
-
-            # Sort data so [ABSENT] rows drop to the very bottom (stable merge preserves standard dates)
-            bl['is_absent_sort'] = is_absent
-            bl = bl.sort_values(by='is_absent_sort', kind='mergesort').drop(columns=['is_absent_sort'])
-
-            # 3. Prepare file for download
-            csv_buffer = io.StringIO()
-            bl.to_csv(csv_buffer, index=False)
-            csv_data = csv_buffer.getvalue()
-
-            # --- UI Display ---
-            st.success("✅ Conversion successful! Ready for Buildlogic.")
-            
-            st.write("### Data Preview")
-            st.dataframe(bl.head(10))
-
-            st.download_button(
-                label="⬇️ Download Buildlogic CSV",
-                data=csv_data,
-                file_name="Buildlogic_Import_Ready.csv",
-                mime="text/csv"
-            )
+            elif view_mode == "👷 Employee Forensics":
+                employee_list = dash['Created by'].dropna().unique().tolist()
+                selected_emp = st.selectbox("Select Employee", employee_list)
+                
+                emp_data = dash[dash['Created by'] == selected_emp]
+                
+                e_col1, e_col2, e_col3 = st.columns(3)
+                e_col1.metric("Total Hours", f"{emp_data['Hours - Ordinary Hours'].sum():.1f}")
+                e_col2.metric("Standard Hours", f"{emp_data['Standard Hours'].sum():.1f}")
+                e_col3.metric("Overtime Hours", f"{emp_data['Overtime Hours'].sum():.1f}")
+                
+                st.subheader("Time Split by Project")
+                proj_split = emp_data.groupby('Hours - Project')['Hours - Ordinary Hours'].sum()
+                st.bar_chart(proj_split)
 
         except Exception as e:
-            st.error(f"An error occurred while processing the file: {e}")
+            st.error(f"Dashboard Error: {e}")
