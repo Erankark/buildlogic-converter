@@ -3,7 +3,7 @@ import pandas as pd
 import numpy as np
 import io
 import os
-import plotly.express as px  # <-- The new charting library
+import plotly.express as px
 
 # Set up the web page
 st.set_page_config(page_title="Harwyn Timesheet Hub", page_icon="🏗️", layout="wide")
@@ -166,6 +166,29 @@ with tab2:
             dash['Overtime Hours'] = dash['Hours - Ordinary Hours'] - dash['Standard Hours']
             dash['Overtime Hours'] = dash['Overtime Hours'].clip(lower=0) 
 
+            # --- THE NEW GLOBAL DATE FILTER ---
+            st.divider()
+            
+            min_date = dash['Date'].min()
+            max_date = dash['Date'].max()
+            
+            # This widget automatically locks to the data bounds
+            date_selection = st.date_input(
+                "📅 Filter by Date Range",
+                value=(min_date, max_date),
+                min_value=min_date,
+                max_value=max_date
+            )
+            
+            # Wait for user to select both a start and an end date before processing
+            if len(date_selection) == 2:
+                start_date, end_date = date_selection
+                dash = dash[(dash['Date'] >= start_date) & (dash['Date'] <= end_date)]
+            else:
+                st.warning("Please select both a start and an end date to view the dashboard.")
+                st.stop()
+
+
             # --- GLOBAL COMMAND CENTER ---
             st.header("Global Overview")
             col1, col2, col3 = st.columns(3)
@@ -182,18 +205,16 @@ with tab2:
                 project_list = dash['Hours - Project'].dropna().unique().tolist()
                 selected_project = st.selectbox("Select Project", project_list)
                 
-                # Filter data to just the selected project
                 proj_data = dash[dash['Hours - Project'] == selected_project]
                 
-                # --- NEW: PROJECT-SPECIFIC KPIs ---
+                # Project Specific Metrics
                 p_col1, p_col2, p_col3 = st.columns(3)
                 p_col1.metric("Project Total Hours", f"{proj_data['Hours - Ordinary Hours'].sum():.1f}")
                 p_col2.metric("Project Standard Hours", f"{proj_data['Standard Hours'].sum():.1f}")
                 p_col3.metric("Project Overtime Hours", f"{proj_data['Overtime Hours'].sum():.1f}")
                 
-                st.divider() # Adds a clean line break before the charts
+                st.divider()
                 
-                # --- PROJECT CHARTS ---
                 col_a, col_b = st.columns(2)
                 with col_a:
                     st.subheader("Hours by Activity")
@@ -204,7 +225,7 @@ with tab2:
                     st.subheader("Staff Allocation Matrix")
                     matrix = proj_data.pivot_table(index='Hours - Activity', columns='Created by', values='Hours - Ordinary Hours', aggfunc='sum').fillna(0)
                     st.dataframe(matrix, use_container_width=True)
-            # --- UPDATED: THE DUAL PIE CHART LAYOUT ---
+
             elif view_mode == "👷 Employee Forensics":
                 employee_list = dash['Created by'].dropna().unique().tolist()
                 selected_emp = st.selectbox("Select Employee", employee_list)
@@ -218,24 +239,20 @@ with tab2:
                 
                 st.divider()
                 
-                # Create two side-by-side columns for the charts
                 chart_col1, chart_col2 = st.columns(2)
                 
                 with chart_col1:
                     st.subheader("Time Split by Project")
-                    # Group the data
                     proj_split = emp_data.groupby('Hours - Project', as_index=False)['Hours - Ordinary Hours'].sum()
-                    # Create a Plotly Pie Chart (donut style)
                     fig1 = px.pie(proj_split, values='Hours - Ordinary Hours', names='Hours - Project', hole=0.4)
                     st.plotly_chart(fig1, use_container_width=True)
                     
                 with chart_col2:
                     st.subheader("Time Split by Activity")
-                    # Group the data
                     act_split = emp_data.groupby('Hours - Activity', as_index=False)['Hours - Ordinary Hours'].sum()
-                    # Create a Plotly Pie Chart (donut style)
                     fig2 = px.pie(act_split, values='Hours - Ordinary Hours', names='Hours - Activity', hole=0.4)
                     st.plotly_chart(fig2, use_container_width=True)
 
         except Exception as e:
             st.error(f"Dashboard Error: {e}")
+            
