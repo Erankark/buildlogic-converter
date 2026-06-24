@@ -65,18 +65,30 @@ with tab1:
                 dp.loc[valid_idx, 'Hours - Ordinary Hours'] -= 0.5
                 bl['Hours'] = dp['Hours - Ordinary Hours']
 
-                bl['JobNumber'] = dp['Hours - Project'].astype(str).str.extract(r'HWYN(\d{4})', expand=False)
+               bl['JobNumber'] = dp['Hours - Project'].astype(str).str.extract(r'HWYN(\d{4})', expand=False)
                 
-                activity_split = dp['Hours - Activity'].astype(str).str.split(' - ', n=1, expand=True)
-                bl['Description'] = activity_split[1].fillna(activity_split[0])
-                bl['ReferenceCode'] = pd.to_numeric(activity_split[0], errors='coerce')
+                # --- BULLETPROOF EXTRACTION LOGIC ---
+                def parse_activity(val):
+                    val = str(val)
+                    if ' - ' in val:
+                        code, desc = val.split(' - ', 1)
+                        return code.strip(), desc.strip()
+                    return '', val.strip()
+
+                parsed_activities = dp['Hours - Activity'].apply(parse_activity)
+                activity_codes = parsed_activities.apply(lambda x: x[0])
+                
+                bl['Description'] = parsed_activities.apply(lambda x: x[1])
+                bl['ReferenceCode'] = pd.to_numeric(activity_codes, errors='coerce')
 
                 bl['REVIEW_NOTES'] = ""
                 bl['AccountingSystemCode'] = bl['Companyname'].map(emp_code_dict).fillna('MISSING')
                 base_rates = pd.to_numeric(bl['Companyname'].map(emp_rate_dict), errors='coerce')
                 bl['TaxCode'] = bl['Companyname'].map(emp_tax_dict).fillna('MISSING')
-                bl['Trade'] = activity_split[0].str.zfill(5).map(act_trade_dict)
-                bl['CostCode'] = activity_split[0].str.zfill(5).map(act_cost_dict)
+                
+                # Lookups now safely use the isolated code only
+                bl['Trade'] = activity_codes.str.zfill(5).map(act_trade_dict)
+                bl['CostCode'] = activity_codes.str.zfill(5).map(act_cost_dict)
 
                 is_factory = dp['Hours - Project'].astype(str).str.contains(r'HWYN000[01]', case=False, na=False)
                 bl.loc[is_factory, 'JobNumber'] = '0001'
