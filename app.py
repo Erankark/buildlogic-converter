@@ -101,6 +101,12 @@ with tab1:
                 bl.loc[is_factory, 'JobNumber'] = '0001'
                 bl.loc[is_factory, 'CostCode'] = 'LA'
 
+                # Rule 1.5: Prep Modules Override
+                is_prep = bl['Description'].astype(str).str.contains('Prep modules', case=False, na=False)
+                bl.loc[is_prep, 'Trade'] = '17'
+                bl.loc[is_prep, 'CostCode'] = 'LA'
+                bl.loc[is_prep, 'ReferenceCode'] = 1704
+
                 # Rule 3: 4-Digit Text Enforcer
                 def format_job(val):
                     val = str(val).split('.')[0] 
