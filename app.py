@@ -182,8 +182,18 @@ with tab2:
                 project_list = dash['Hours - Project'].dropna().unique().tolist()
                 selected_project = st.selectbox("Select Project", project_list)
                 
+                # Filter data to just the selected project
                 proj_data = dash[dash['Hours - Project'] == selected_project]
                 
+                # --- NEW: PROJECT-SPECIFIC KPIs ---
+                p_col1, p_col2, p_col3 = st.columns(3)
+                p_col1.metric("Project Total Hours", f"{proj_data['Hours - Ordinary Hours'].sum():.1f}")
+                p_col2.metric("Project Standard Hours", f"{proj_data['Standard Hours'].sum():.1f}")
+                p_col3.metric("Project Overtime Hours", f"{proj_data['Overtime Hours'].sum():.1f}")
+                
+                st.divider() # Adds a clean line break before the charts
+                
+                # --- PROJECT CHARTS ---
                 col_a, col_b = st.columns(2)
                 with col_a:
                     st.subheader("Hours by Activity")
@@ -194,7 +204,6 @@ with tab2:
                     st.subheader("Staff Allocation Matrix")
                     matrix = proj_data.pivot_table(index='Hours - Activity', columns='Created by', values='Hours - Ordinary Hours', aggfunc='sum').fillna(0)
                     st.dataframe(matrix, use_container_width=True)
-
             # --- UPDATED: THE DUAL PIE CHART LAYOUT ---
             elif view_mode == "👷 Employee Forensics":
                 employee_list = dash['Created by'].dropna().unique().tolist()
